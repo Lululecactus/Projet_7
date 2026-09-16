@@ -4,6 +4,7 @@ from pathlib import Path
 
 
 DATA_FILE = Path(__file__).parent / "data" / "actions.csv"
+MAX_BUDGET = 500
 
 
 def calculate_profit(cost: float, profit_percent: float) -> float:
@@ -15,6 +16,30 @@ def generate_combinations(actions: list[dict]):
     """Génère toutes les combinaisons non vides d'actions."""
     for combination_size in range(1, len(actions) + 1):
         yield from combinations(actions, combination_size)
+
+
+def find_best_investment(actions: list[dict], budget: float) -> dict:
+    """Trouve la combinaison valide qui offre le meilleur bénéfice."""
+    best_investment = {
+        "actions": [],
+        "cost": 0.0,
+        "profit": 0.0,
+    }
+
+    for combination in generate_combinations(actions):
+        total_cost = sum(action["cost"] for action in combination)
+
+        if total_cost <= budget:
+            total_profit = sum(action["profit"] for action in combination)
+
+            if total_profit > best_investment["profit"]:
+                best_investment = {
+                    "actions": list(combination),
+                    "cost": total_cost,
+                    "profit": total_profit,
+                }
+
+    return best_investment
 
 
 def load_actions(file_path: Path) -> list[dict]:
@@ -43,7 +68,11 @@ def load_actions(file_path: Path) -> list[dict]:
 
 if __name__ == "__main__":
     actions = load_actions(DATA_FILE)
-    combination_count = sum(1 for _ in generate_combinations(actions))
+    best_investment = find_best_investment(actions, MAX_BUDGET)
 
-    print(f"{len(actions)} actions chargées.")
-    print(f"{combination_count} combinaisons non vides générées.")
+    print("Meilleur investissement :")
+    for action in best_investment["actions"]:
+        print(f"- {action['name']}: {action['cost']:.2f} €")
+
+    print(f"Coût total : {best_investment['cost']:.2f} €")
+    print(f"Bénéfice total : {best_investment['profit']:.2f} €")
