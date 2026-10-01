@@ -1,104 +1,91 @@
+"""Partie 2 : sac à dos 0/1 par programmation dynamique.
+
+Exemple : python3 optimized.py data/dataset1.csv
+Temps O(n × B), où B est le budget exprimé en centimes.
+"""
+
+import argparse
 from decimal import Decimal
+from pathlib import Path
 from time import perf_counter
 
-from bruteforce import DATA_FILE, MAX_BUDGET, load_actions
+import numpy as np
+
+from actions import BUDGET_EUROS, DEFAULT_FILE, load_actions, print_result
 
 
-def convert_to_cents(amount: Decimal) -> int:
-    """Convertit un montant positif ou nul en centimes, sans arrondi."""
-    if not amount.is_finite() or amount < 0:
-        raise ValueError("Le montant doit être un nombre fini positif ou nul.")
+def find_best_investment(actions, budget_euros=BUDGET_EUROS):
+    """Compare, pour chaque action et budget, acheter ou ne pas acheter.
 
-    amount_in_cents = amount * 100
-    if amount_in_cents != amount_in_cents.to_integral_value():
-        raise ValueError("Le montant doit être un multiple de 0,01 euro.")
+    Les coûts sont des centimes entiers. Les bénéfices deviennent aussi des
+    entiers, avec assez de décimales pour éviter un arrondi prématuré.
+    """
+    budget_cents = int(budget_euros * 100)
+    if budget_cents < 0 or Decimal(budget_cents) != budget_euros * 100:
+        raise ValueError("Le budget doit être un montant positif en centimes.")
 
-    return int(amount_in_cents)
+    decimal_places = max(
+        (max(0, -action[3].as_tuple().exponent) for action in actions),
+        default=0,
+    )
+    profit_scale = 10 ** decimal_places
+    action_profits = [int(action[3] * profit_scale) for action in actions]
+    if sum(action_profits) > np.iinfo(np.int64).max:
+        raise ValueError("Bénéfices trop grands pour le tableau de calcul.")
 
+    best_profit_by_budget = np.zeros(budget_cents + 1, dtype=np.int64)
+    decisions_by_action = []
 
-def reconstruct_selected_actions(
-    actions,
-    action_costs_cents,
-    purchase_decisions_by_action,
-    budget_cents,
-):
-    """Retrouve un portefeuille optimal en remontant les décisions."""
+    for action, profit_units in zip(actions, action_profits):
+        action_price_cents = int(action[1] * 100)
+        bought_at_budget = np.zeros(budget_cents + 1, dtype=bool)
+
+        if action_price_cents <= budget_cents:
+            # Les tranches associent chaque budget à son budget restant.
+            # L'addition produit un nouveau tableau AVANT la mise à jour :
+            # on ne peut donc pas acheter deux fois l'action en cours.
+            profit_with_purchase = (
+                best_profit_by_budget[:-action_price_cents] + profit_units
+            )
+            profit_without_purchase = best_profit_by_budget[action_price_cents:]
+            bought_at_budget[action_price_cents:] = (
+                profit_with_purchase > profit_without_purchase
+            )
+            np.maximum(
+                profit_without_purchase,
+                profit_with_purchase,
+                out=profit_without_purchase,
+            )
+
+        decisions_by_action.append(bought_at_budget)
+
+    # On remonte les décisions pour retrouver les noms des actions achetées.
     selected_actions = []
-    remaining_budget_cents = budget_cents
-
-    for action_index in range(len(actions) - 1, -1, -1):
-        purchase_decisions = purchase_decisions_by_action[action_index]
-        if purchase_decisions[remaining_budget_cents]:
-            selected_actions.append(actions[action_index])
-            remaining_budget_cents -= action_costs_cents[action_index]
-
+    remaining_budget = budget_cents
+    for index in range(len(actions) - 1, -1, -1):
+        if decisions_by_action[index][remaining_budget]:
+            selected_actions.append(actions[index])
+            remaining_budget -= int(actions[index][1] * 100)
     selected_actions.reverse()
     return selected_actions
 
 
-def find_best_investment(actions, budget):
-    """Renvoie un portefeuille optimal, son coût et son bénéfice.
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("csv_file", nargs="?", type=Path, default=DEFAULT_FILE)
+    arguments = parser.parse_args()
 
-    Chaque action est un tuple (nom, coût, taux, bénéfice), avec des Decimal.
-    Les prix sont strictement positifs et exprimables en centimes entiers.
-    En cas d'ex aequo, on conserve le choix déjà enregistré.
-    """
-    budget_cents = convert_to_cents(budget)
-    action_costs_cents = []
-    for action in actions:
-        action_cost_cents = convert_to_cents(action[1])
-        if action_cost_cents == 0:
-            raise ValueError("Le prix d'une action doit être strictement positif.")
-        if not action[3].is_finite():
-            raise ValueError("Le bénéfice d'une action doit être un nombre fini.")
-        action_costs_cents.append(action_cost_cents)
+    start_time = perf_counter()
+    try:
+        actions, report = load_actions(arguments.csv_file)
+        best_actions = find_best_investment(actions)
+        elapsed_seconds = perf_counter() - start_time
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
 
-    best_profit_by_budget = [Decimal("0")] * (budget_cents + 1)
-    purchase_decisions_by_action = []
-
-    for action_index, action in enumerate(actions):
-        action_cost_cents = action_costs_cents[action_index]
-        action_profit = action[3]
-        # Un octet par budget : 1 si on achète cette action, 0 sinon.
-        purchase_decisions = bytearray(budget_cents + 1)
-
-        # Descendre empêche de réutiliser la même action dans ce passage.
-        for available_budget_cents in range(
-            budget_cents, action_cost_cents - 1, -1
-        ):
-            profit_without_action = best_profit_by_budget[available_budget_cents]
-            remaining_budget_cents = available_budget_cents - action_cost_cents
-            profit_with_action = (
-                action_profit + best_profit_by_budget[remaining_budget_cents]
-            )
-
-            if profit_with_action > profit_without_action:
-                best_profit_by_budget[available_budget_cents] = profit_with_action
-                purchase_decisions[available_budget_cents] = 1
-
-        purchase_decisions_by_action.append(purchase_decisions)
-
-    selected_actions = reconstruct_selected_actions(
-        actions, action_costs_cents, purchase_decisions_by_action, budget_cents
-    )
-    total_cost = sum((action[1] for action in selected_actions), Decimal("0"))
-    best_profit = best_profit_by_budget[budget_cents]
-
-    return selected_actions, total_cost, best_profit
+    print_result(best_actions, report)
+    print(f"Temps de lecture et de recherche : {elapsed_seconds:.4f} s")
 
 
 if __name__ == "__main__":
-    start_time = perf_counter()
-    actions = load_actions(DATA_FILE)
-    selected_actions, total_cost, best_profit = find_best_investment(
-        actions, MAX_BUDGET
-    )
-    elapsed_seconds = perf_counter() - start_time
-
-    print("Portefeuille optimal :")
-    for action_name, action_cost, profit_percent, action_profit in selected_actions:
-        print(f"  - {action_name}: {action_cost:.2f} €")
-
-    print(f"Coût total : {total_cost:.2f} €")
-    print(f"Bénéfice total : {best_profit:.2f} €")
-    print(f"Temps de lecture et de recherche : {elapsed_seconds:.4f} s")
+    main()
